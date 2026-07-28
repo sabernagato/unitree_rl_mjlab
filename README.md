@@ -58,6 +58,7 @@ python scripts/train.py Unitree-G1-Flat \
 Available velocity tracking tasks:
   - Unitree-B2W-Flat
   - Unitree-B2W-Rough
+  - Unitree-B2W-Stairs
   - Unitree-Go2-Flat
   - Unitree-G1-Flat
   - Unitree-G1-23Dof-Flat
@@ -74,6 +75,14 @@ python scripts/train.py Unitree-B2W-Flat --env.scene.num-envs=4096
 The B2W policy controls 12 leg joints with position targets and four wheel
 joints with velocity targets. Lateral velocity commands are disabled because
 the wheels are not steerable.
+
+The stair-specialist task uses fixed 15 cm and 20 cm stairs plus a fixed
+40 cm single step (up and down variants), without interpolating step heights:
+
+```bash
+B2W_PAYLOAD_KG=20 python scripts/train.py Unitree-B2W-Stairs \
+  --env.scene.num-envs=1536
+```
 
 > [!NOTE]
 > For more details, refer to the mjlab documentation:

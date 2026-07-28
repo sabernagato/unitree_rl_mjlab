@@ -1,5 +1,6 @@
 """Unitree B2W constants and articulation configuration."""
 
+import os
 from pathlib import Path
 
 import mujoco
@@ -30,6 +31,24 @@ def get_assets(meshdir: str) -> dict[str, bytes]:
 def get_spec() -> mujoco.MjSpec:
   spec = mujoco.MjSpec.from_file(str(B2W_XML))
   spec.assets = get_assets(spec.meshdir)
+  payload_mass = float(os.environ.get("B2W_PAYLOAD_KG", "0"))
+  if payload_mass < 0:
+    raise ValueError("B2W_PAYLOAD_KG must be non-negative")
+  if payload_mass > 0:
+    base_body = spec.body("base_link")
+    payload_body = base_body.add_body(
+      name="payload",
+      pos=(0.0, 0.0, 0.20),
+    )
+    payload_body.add_geom(
+      name="payload_visual",
+      type=mujoco.mjtGeom.mjGEOM_BOX,
+      size=(0.25, 0.18, 0.08),
+      mass=payload_mass,
+      contype=0,
+      conaffinity=0,
+      rgba=(0.85, 0.25, 0.05, 1.0),
+    )
   return spec
 
 

@@ -1,5 +1,8 @@
 """Unitree B2W velocity environment configurations."""
 
+from copy import deepcopy
+
+import mjlab.terrains as terrain_gen
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp.actions import (
@@ -12,6 +15,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
+from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
 from src.assets.robots import get_b2w_robot_cfg
 import src.tasks.velocity.mdp as unitree_mdp
@@ -21,6 +25,65 @@ _LEG_JOINTS = (r".*_(hip|thigh|calf)_joint",)
 _WHEEL_JOINTS = (r".*_wheel_joint",)
 _WHEEL_SITES = ("FR", "FL", "RR", "RL")
 _WHEEL_GEOMS = tuple(f"{name}_wheel_collision" for name in _WHEEL_SITES)
+
+# B2W-specific curriculum with a strong focus on stair traversal.
+#
+# Stair heights are fixed, discrete specifications rather than difficulty
+# ranges: 15 cm stairs, 20 cm stairs, and a 40 cm single wide step. The
+# large-step geometry uses the 8 m patch, 1 m border, 4 m center platform,
+# and 1 m tread to produce exactly one step in every travel direction.
+_B2W_STAIRS_TERRAINS_CFG = TerrainGeneratorCfg(
+  size=(8.0, 8.0),
+  border_width=20.0,
+  num_rows=10,
+  num_cols=20,
+  sub_terrains={
+    "flat": terrain_gen.BoxFlatTerrainCfg(proportion=0.10),
+    "stairs_down_15cm": terrain_gen.BoxPyramidStairsTerrainCfg(
+      proportion=0.10,
+      step_height_range=(0.15, 0.15),
+      step_width=0.30,
+      platform_width=3.0,
+      border_width=1.0,
+    ),
+    "stairs_up_15cm": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+      proportion=0.10,
+      step_height_range=(0.15, 0.15),
+      step_width=0.30,
+      platform_width=3.0,
+      border_width=1.0,
+    ),
+    "stairs_down_20cm": terrain_gen.BoxPyramidStairsTerrainCfg(
+      proportion=0.15,
+      step_height_range=(0.20, 0.20),
+      step_width=0.30,
+      platform_width=3.0,
+      border_width=1.0,
+    ),
+    "stairs_up_20cm": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+      proportion=0.15,
+      step_height_range=(0.20, 0.20),
+      step_width=0.30,
+      platform_width=3.0,
+      border_width=1.0,
+    ),
+    "large_step_down_40cm": terrain_gen.BoxPyramidStairsTerrainCfg(
+      proportion=0.20,
+      step_height_range=(0.40, 0.40),
+      step_width=1.0,
+      platform_width=4.0,
+      border_width=1.0,
+    ),
+    "large_step_up_40cm": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+      proportion=0.20,
+      step_height_range=(0.40, 0.40),
+      step_width=1.0,
+      platform_width=4.0,
+      border_width=1.0,
+    ),
+  },
+  add_lights=True,
+)
 
 
 def _leg_asset_cfg() -> SceneEntityCfg:
@@ -198,6 +261,22 @@ def unitree_b2w_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.scene.terrain.terrain_generator.num_cols = 5
         cfg.scene.terrain.terrain_generator.num_rows = 5
         cfg.scene.terrain.terrain_generator.border_width = 10.0
+
+  return cfg
+
+
+def unitree_b2w_stairs_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create the B2W fixed-height stair-specialist configuration."""
+  cfg = unitree_b2w_rough_env_cfg(play=play)
+
+  assert cfg.scene.terrain is not None
+  cfg.scene.terrain.terrain_generator = deepcopy(_B2W_STAIRS_TERRAINS_CFG)
+
+  if play:
+    cfg.scene.terrain.terrain_generator.curriculum = False
+    cfg.scene.terrain.terrain_generator.num_cols = 5
+    cfg.scene.terrain.terrain_generator.num_rows = 5
+    cfg.scene.terrain.terrain_generator.border_width = 10.0
 
   return cfg
 
