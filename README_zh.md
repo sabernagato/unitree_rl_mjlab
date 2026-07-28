@@ -54,12 +54,23 @@ python scripts/train.py Unitree-G1-Flat \
 ```
 
 - 第一个参数(如 Mjlab-Velocity-Flat-Unitree-G1)为必选参数，确定要启用的训练环境。可选：
+  - Unitree-B2W-Flat
+  - Unitree-B2W-Rough
   - Unitree-Go2-Flat
   - Unitree-G1-Flat
   - Unitree-G1-23Dof-Flat
   - Unitree-H1_2-Flat
   - Unitree-A2-Flat
   - Unitree-R1-Flat
+
+B2W 建议先从平地基线开始训练：
+
+```bash
+python scripts/train.py Unitree-B2W-Flat --env.scene.num-envs=4096
+```
+
+B2W 策略使用位置目标控制 12 个腿部关节、使用速度目标控制 4 个轮关节。
+由于四个轮子不能转向，训练命令中已禁用横向速度。
 
 > [!NOTE]
 > 更多有关详细说明，请参阅 mjlab 文档
@@ -231,4 +242,3 @@ cd deploy/robots/g1/build
 - [rsl_rl](https://github.com/leggedrobotics/rsl_rl.git): 强化学习算法实现。
 - [mujoco_warp](https://github.com/google-deepmind/mujoco_warp.git): 提供 GPU 加速渲染与仿真接口。
 - [mujoco](https://github.com/google-deepmind/mujoco.git): 提供强大仿真功能。
-

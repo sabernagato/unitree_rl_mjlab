@@ -154,7 +154,14 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
   log_dir = log_root_path / log_dir_name
 
   # Select GPUs based on CUDA_VISIBLE_DEVICES and user specification.
-  selected_gpus, num_gpus = select_gpus(args.gpu_ids)
+  gpu_ids = args.gpu_ids
+  if gpu_ids is not None and "CUDA_VISIBLE_DEVICES" not in os.environ:
+    import torch
+
+    if not torch.cuda.is_available():
+      gpu_ids = None
+      print("[INFO] CUDA is unavailable; falling back to CPU training.")
+  selected_gpus, num_gpus = select_gpus(gpu_ids)
 
   # Set environment variables for all modes.
   if selected_gpus is None:

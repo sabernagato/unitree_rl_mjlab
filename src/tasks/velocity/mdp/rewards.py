@@ -426,3 +426,19 @@ def stand_still(
             reward *= scale
     return reward
 
+
+def wheel_stand_still(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize wheel rotation only while the commanded base velocity is zero."""
+  asset: Entity = env.scene[asset_cfg.name]
+  wheel_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  cost = torch.sum(torch.square(wheel_vel), dim=1)
+
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  command_magnitude = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  return cost * (command_magnitude <= command_threshold).float()

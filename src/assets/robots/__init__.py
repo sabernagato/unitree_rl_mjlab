@@ -10,6 +10,10 @@ from .unitree_as2.as2_constants import (
   get_as2_robot_cfg as get_as2_robot_cfg,
 )
 
+from .unitree_b2w.b2w_constants import (
+  get_b2w_robot_cfg as get_b2w_robot_cfg,
+)
+
 from .unitree_g1.g1_constants import (
   G1_ACTION_SCALE as G1_ACTION_SCALE,
 )

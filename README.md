@@ -56,12 +56,24 @@ python scripts/train.py Unitree-G1-Flat \
 
 - The first argument (e.g., Mjlab-Velocity-Flat-Unitree-G1) specifies the training task.
 Available velocity tracking tasks:
+  - Unitree-B2W-Flat
+  - Unitree-B2W-Rough
   - Unitree-Go2-Flat
   - Unitree-G1-Flat
   - Unitree-G1-23Dof-Flat
   - Unitree-H1_2-Flat
   - Unitree-A2-Flat
   - Unitree-R1-Flat
+
+For B2W, start with the flat-terrain baseline:
+
+```bash
+python scripts/train.py Unitree-B2W-Flat --env.scene.num-envs=4096
+```
+
+The B2W policy controls 12 leg joints with position targets and four wheel
+joints with velocity targets. Lateral velocity commands are disabled because
+the wheels are not steerable.
 
 > [!NOTE]
 > For more details, refer to the mjlab documentation:
