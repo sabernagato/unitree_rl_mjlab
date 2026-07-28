@@ -4,7 +4,8 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from threading import Lock
+from typing import Any, Literal
 
 import torch
 import tyro
@@ -17,6 +18,67 @@ from mjlab.utils.os import get_wandb_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
+from mjlab.viewer.native.keys import KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_S, KEY_UP
+
+
+class KeyboardVelocityControl:
+  """Thread-safe manual override for a velocity command term."""
+
+  def __init__(self, command_term: Any):
+    required_attrs = ("compute", "vel_command_b", "cfg")
+    if not all(hasattr(command_term, attr) for attr in required_attrs):
+      raise TypeError("The twist command does not expose velocity command controls")
+
+    self._term = command_term
+    self._lock = Lock()
+    self._command = (0.0, 0.0, 0.0)
+    self._original_compute = command_term.compute
+
+    # CommandTerm.compute() runs on the simulation thread. Keep tensor writes
+    # there; native viewer key callbacks only update the Python tuple above.
+    def compute_with_manual_override(dt: float) -> None:
+      self._original_compute(dt)
+      self._apply()
+
+    command_term.compute = compute_with_manual_override
+    self._apply()
+
+  def adjust(
+    self, delta_b: tuple[float, float, float]
+  ) -> tuple[float, float, float]:
+    with self._lock:
+      candidate = tuple(
+        value + delta
+        for value, delta in zip(self._command, delta_b, strict=True)
+      )
+      self._command = self._clamp(candidate)
+      return self._command
+
+  def zero(self) -> tuple[float, float, float]:
+    with self._lock:
+      self._command = (0.0, 0.0, 0.0)
+      return self._command
+
+  def _clamp(
+    self, command_b: tuple[float, float, float]
+  ) -> tuple[float, float, float]:
+    ranges = self._term.cfg.ranges
+    limits = (ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)
+    return tuple(
+      min(max(float(value), axis_limits[0]), axis_limits[1])
+      for value, axis_limits in zip(command_b, limits, strict=True)
+    )
+
+  def _apply(self) -> None:
+    with self._lock:
+      command = self._command
+    self._term.vel_command_b[:, 0] = command[0]
+    self._term.vel_command_b[:, 1] = command[1]
+    self._term.vel_command_b[:, 2] = command[2]
+    if hasattr(self._term, "is_heading_env"):
+      self._term.is_heading_env.fill_(False)
+    if hasattr(self._term, "is_standing_env"):
+      self._term.is_standing_env.fill_(False)
 
 
 @dataclass(frozen=True)
@@ -32,6 +94,9 @@ class PlayConfig:
   video_width: int | None = None
   camera: int | str | None = None
   viewer: Literal["auto", "native", "viser"] = "auto"
+  keyboard_control: bool = False
+  keyboard_linear_step: float = 0.25
+  keyboard_yaw_step: float = 0.25
   no_terminations: bool = False
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
 
@@ -167,8 +232,46 @@ def run_play(task_id: str, cfg: PlayConfig):
   else:
     resolved_viewer = cfg.viewer
 
+  key_callback = None
+  if cfg.keyboard_control:
+    if resolved_viewer != "native":
+      raise ValueError("--keyboard-control requires --viewer native")
+    if "twist" not in env.unwrapped.command_manager.active_terms:
+      raise ValueError("--keyboard-control requires a velocity task with a twist command")
+
+    command_term = env.unwrapped.command_manager.get_term("twist")
+    keyboard = KeyboardVelocityControl(command_term)
+
+    def print_command(command: tuple[float, float, float]) -> None:
+      print(
+        "\r[KEYBOARD] "
+        f"forward={command[0]:+.2f} m/s  yaw={command[2]:+.2f} rad/s  "
+        "(arrows adjust, S stops)   ",
+        end="",
+        flush=True,
+      )
+
+    def handle_key(key: int) -> None:
+      if key == KEY_UP:
+        command = keyboard.adjust((cfg.keyboard_linear_step, 0.0, 0.0))
+      elif key == KEY_DOWN:
+        command = keyboard.adjust((-cfg.keyboard_linear_step, 0.0, 0.0))
+      elif key == KEY_LEFT:
+        command = keyboard.adjust((0.0, 0.0, cfg.keyboard_yaw_step))
+      elif key == KEY_RIGHT:
+        command = keyboard.adjust((0.0, 0.0, -cfg.keyboard_yaw_step))
+      elif key == KEY_S:
+        command = keyboard.zero()
+      else:
+        return
+      print_command(command)
+
+    key_callback = handle_key
+    print("[INFO]: Keyboard control enabled: arrows adjust velocity, S stops")
+    print_command((0.0, 0.0, 0.0))
+
   if resolved_viewer == "native":
-    NativeMujocoViewer(env, policy).run()
+    NativeMujocoViewer(env, policy, key_callback=key_callback).run()
   elif resolved_viewer == "viser":
     ViserPlayViewer(env, policy).run()
   else:
