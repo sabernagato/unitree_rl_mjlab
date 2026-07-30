@@ -36,7 +36,9 @@ struct ArticulationData
 
     Eigen::Quaternionf root_quat_w;
 
-    std::vector<float> joint_ids_map;
+    // Maps policy/model joint order to the integer motor indices used by
+    // Unitree LowState/LowCmd.
+    std::vector<int> joint_ids_map;
 
     unitree::common::UnitreeJoystick* joystick = nullptr;
 };

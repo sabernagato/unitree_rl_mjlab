@@ -125,10 +125,10 @@ REGISTER_OBSERVATION(velocity_commands)
 REGISTER_OBSERVATION(gait_phase)
 {
     float period = params["period"].as<float>();
-    float delta_phase = env->step_dt * (1.0f / period);
-
-    env->global_phase += delta_phase;
-    env->global_phase = std::fmod(env->global_phase, 1.0f);
+    float phase = std::fmod(
+        static_cast<float>(env->episode_length) * env->step_dt,
+        period
+    ) / period;
 
     auto cmd = isaaclab::mdp::velocity_commands(env, params);
     float cmd_norm = std::sqrt(
@@ -138,8 +138,8 @@ REGISTER_OBSERVATION(gait_phase)
     );
 
     std::vector<float> obs(2);
-    obs[0] = std::sin(env->global_phase * 2 * M_PI);
-    obs[1] = std::cos(env->global_phase * 2 * M_PI);
+    obs[0] = std::sin(phase * 2 * M_PI);
+    obs[1] = std::cos(phase * 2 * M_PI);
 
     if (cmd_norm < 0.1f)
     {

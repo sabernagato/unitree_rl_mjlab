@@ -5,7 +5,11 @@ from pathlib import Path
 
 import mujoco
 
-from mjlab.actuator import BuiltinPositionActuatorCfg, XmlVelocityActuatorCfg
+from mjlab.actuator import (
+  BuiltinPositionActuatorCfg,
+  DelayedActuatorCfg,
+  XmlVelocityActuatorCfg,
+)
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.os import update_assets
 from mjlab.utils.spec_config import CollisionCfg
@@ -56,29 +60,59 @@ def get_spec() -> mujoco.MjSpec:
 # Actuator config.
 ##
 
-B2W_ACTUATOR_HIP = BuiltinPositionActuatorCfg(
+_B2W_ACTUATOR_HIP_BASE = BuiltinPositionActuatorCfg(
   target_names_expr=(".*_hip_joint",),
   stiffness=100.0,
   damping=5.0,
   effort_limit=200.0,
   armature=0.1,
 )
-B2W_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
+_B2W_ACTUATOR_THIGH_BASE = BuiltinPositionActuatorCfg(
   target_names_expr=(".*_thigh_joint",),
   stiffness=100.0,
   damping=5.0,
   effort_limit=200.0,
   armature=0.1,
 )
-B2W_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
+_B2W_ACTUATOR_CALF_BASE = BuiltinPositionActuatorCfg(
   target_names_expr=(".*_calf_joint",),
   stiffness=160.0,
   damping=8.0,
   effort_limit=320.0,
   armature=0.1,
 )
-B2W_ACTUATOR_WHEEL = XmlVelocityActuatorCfg(
+_B2W_ACTUATOR_WHEEL_BASE = XmlVelocityActuatorCfg(
   target_names_expr=(".*_wheel_joint",),
+)
+
+# Real low-level control adds communication, scheduling, and motor-response
+# latency. Keep up to one 50 Hz policy frame of delay in the physics model.
+# The lag is sampled once per episode by dr.sync_actuator_delays.
+_DELAY_CFG = {
+  "delay_min_lag": 0,
+  "delay_max_lag": 4,  # Four 5 ms physics steps = 20 ms.
+  "delay_hold_prob": 1.0,
+}
+
+B2W_ACTUATOR_HIP = DelayedActuatorCfg(
+  base_cfg=_B2W_ACTUATOR_HIP_BASE,
+  delay_target="position",
+  **_DELAY_CFG,
+)
+B2W_ACTUATOR_THIGH = DelayedActuatorCfg(
+  base_cfg=_B2W_ACTUATOR_THIGH_BASE,
+  delay_target="position",
+  **_DELAY_CFG,
+)
+B2W_ACTUATOR_CALF = DelayedActuatorCfg(
+  base_cfg=_B2W_ACTUATOR_CALF_BASE,
+  delay_target="position",
+  **_DELAY_CFG,
+)
+B2W_ACTUATOR_WHEEL = DelayedActuatorCfg(
+  base_cfg=_B2W_ACTUATOR_WHEEL_BASE,
+  delay_target="velocity",
+  **_DELAY_CFG,
 )
 
 

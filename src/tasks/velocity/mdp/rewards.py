@@ -7,7 +7,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import BuiltinSensor, ContactSensor
+from mjlab.sensor import BuiltinSensor, ContactSensor, RayCastSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
@@ -38,6 +38,97 @@ def track_linear_velocity(
   z_error = torch.square(actual[:, 2])
   lin_vel_error = xy_error + (2 * z_error)
   return torch.exp(-lin_vel_error / std**2)
+
+
+def track_planar_velocity(
+  env: ManagerBasedRlEnv,
+  std: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Track commanded planar velocity without mixing in vertical motion.
+
+  Wheel torque can compress B2W's serial legs during acceleration. Keeping the
+  planar objective separate from vertical stabilization prevents that transient
+  from erasing the forward-velocity learning signal.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  actual = asset.data.root_link_lin_vel_b
+  xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
+
+  env.extras["log"]["Metrics/linear_velocity_error_instant"] = torch.mean(
+    torch.sqrt(xy_error)
+  )
+  env.extras["log"]["Metrics/base_speed_xy"] = torch.mean(
+    torch.linalg.vector_norm(actual[:, :2], dim=1)
+  )
+  env.extras["log"]["Metrics/command_speed_xy"] = torch.mean(
+    torch.linalg.vector_norm(command[:, :2], dim=1)
+  )
+  return torch.exp(-xy_error / std**2)
+
+
+def base_vertical_velocity_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize vertical base motion independently from planar tracking."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return torch.square(asset.data.root_link_lin_vel_b[:, 2])
+
+
+def base_height_l2(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize deviation from a flat-ground base-height target."""
+  asset: Entity = env.scene[asset_cfg.name]
+  height_error = asset.data.root_link_pos_w[:, 2] - target_height
+  env.extras["log"]["Metrics/base_height"] = torch.mean(
+    asset.data.root_link_pos_w[:, 2]
+  )
+  return torch.square(height_error)
+
+
+def base_height_above_terrain_l2(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  terrain_sensor_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize base height relative to the median terrain-scan elevation.
+
+  A world-frame height target is valid on flat ground but becomes contradictory
+  on stairs. The median is deliberately used instead of the minimum/maximum so
+  a step entering one edge of the 187-ray footprint does not abruptly move the
+  target before most of the robot has reached it.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  sensor: RayCastSensor = env.scene[terrain_sensor_name]
+  hit_height = sensor.data.hit_pos_w[..., 2]
+  valid = sensor.data.distances >= 0.0
+  masked_height = torch.where(
+    valid,
+    hit_height,
+    torch.full_like(hit_height, torch.nan),
+  )
+  ground_height = torch.nanmedian(masked_height, dim=1).values
+
+  # Ray misses should neither introduce NaNs nor a large artificial penalty.
+  fallback_ground = asset.data.root_link_pos_w[:, 2] - target_height
+  ground_height = torch.where(
+    torch.isfinite(ground_height),
+    ground_height,
+    fallback_ground,
+  )
+  relative_height = asset.data.root_link_pos_w[:, 2] - ground_height
+  env.extras["log"]["Metrics/base_height_above_terrain"] = torch.mean(
+    relative_height
+  )
+  return torch.square(relative_height - target_height)
 
 
 def track_angular_velocity(
@@ -442,3 +533,222 @@ def wheel_stand_still(
   assert command is not None
   command_magnitude = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
   return cost * (command_magnitude <= command_threshold).float()
+
+
+def _terrain_relief(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+  """Return max-minus-min terrain height across a raycast footprint."""
+  sensor: RayCastSensor = env.scene[sensor_name]
+  hit_height = sensor.data.hit_pos_w[..., 2]
+  valid = sensor.data.distances >= 0.0
+  high = torch.where(valid, hit_height, torch.full_like(hit_height, -torch.inf))
+  low = torch.where(valid, hit_height, torch.full_like(hit_height, torch.inf))
+  relief = torch.amax(high, dim=1) - torch.amin(low, dim=1)
+  return torch.where(torch.isfinite(relief), relief, torch.zeros_like(relief))
+
+
+def wheel_command_tracking(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  wheel_radius: float,
+  std: float,
+  asset_cfg: SceneEntityCfg,
+  terrain_sensor_name: str | None = None,
+  rough_terrain_scale: float = 0.25,
+  roughness_threshold: float = 0.05,
+) -> torch.Tensor:
+  """Track differential-drive wheel speeds, relaxing the target on obstacles."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+
+  wheel_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  site_pos_delta_w = (
+    asset.data.site_pos_w[:, asset_cfg.site_ids]
+    - asset.data.root_link_pos_w.unsqueeze(1)
+  )
+  root_quat = asset.data.root_link_quat_w.unsqueeze(1).expand(
+    -1, site_pos_delta_w.shape[1], -1
+  )
+  site_pos_b = quat_apply_inverse(root_quat, site_pos_delta_w)
+  target_wheel_vel = (
+    command[:, 0].unsqueeze(1) - command[:, 2].unsqueeze(1) * site_pos_b[..., 1]
+  ) / wheel_radius
+  error = torch.mean(torch.square(wheel_vel - target_wheel_vel), dim=1)
+  reward = torch.exp(-error / std**2)
+
+  if terrain_sensor_name is not None:
+    relief = _terrain_relief(env, terrain_sensor_name)
+    scale = torch.where(
+      relief > roughness_threshold,
+      torch.full_like(reward, rough_terrain_scale),
+      torch.ones_like(reward),
+    )
+    reward *= scale
+
+  env.extras["log"]["Metrics/wheel_speed_error"] = torch.mean(torch.sqrt(error))
+  return reward
+
+
+def wheel_rolling_slip(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  wheel_radius: float,
+  lateral_weight: float,
+  asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+  """Penalize rolling-constraint and lateral slip errors at contacting wheels."""
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  assert contact_sensor.data.found is not None
+
+  wheel_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  wheel_center_vel_w = asset.data.site_lin_vel_w[:, asset_cfg.site_ids]
+  root_quat = asset.data.root_link_quat_w.unsqueeze(1).expand(
+    -1, wheel_center_vel_w.shape[1], -1
+  )
+  wheel_center_vel_b = quat_apply_inverse(root_quat, wheel_center_vel_w)
+  rolling_error = wheel_center_vel_b[..., 0] - wheel_radius * wheel_vel
+  lateral_velocity = wheel_center_vel_b[..., 1]
+
+  in_contact = (contact_sensor.data.found > 0).float()
+  per_wheel_cost = (
+    torch.square(rolling_error)
+    + lateral_weight * torch.square(lateral_velocity)
+  )
+  contact_count = torch.clamp(torch.sum(in_contact, dim=1), min=1.0)
+  cost = torch.sum(per_wheel_cost * in_contact, dim=1) / contact_count
+
+  env.extras["log"]["Metrics/wheel_rolling_slip"] = torch.mean(torch.sqrt(cost))
+  return cost
+
+
+class wheel_obstacle_clearance:
+  """Reward wheel clearance above the last support height when terrain is uneven."""
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    asset_cfg = cfg.params["asset_cfg"]
+    self.num_wheels = len(asset_cfg.site_names)
+    self.ground_height = torch.zeros(
+      (env.num_envs, self.num_wheels), device=env.device, dtype=torch.float32
+    )
+    self.peak_height = torch.zeros_like(self.ground_height)
+    self.initialized = torch.zeros(
+      env.num_envs, device=env.device, dtype=torch.bool
+    )
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.ground_height[env_ids] = 0.0
+    self.peak_height[env_ids] = 0.0
+    self.initialized[env_ids] = False
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    terrain_sensor_name: str,
+    command_name: str,
+    obstacle_threshold: float,
+    clearance_margin: float,
+    min_clearance: float,
+    max_clearance: float,
+    command_threshold: float,
+    asset_cfg: SceneEntityCfg,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    assert contact_sensor.data.found is not None
+
+    wheel_height = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+    in_contact = contact_sensor.data.found > 0
+    first_contact = contact_sensor.compute_first_contact(dt=env.step_dt)
+
+    init_mask = (~self.initialized).unsqueeze(1)
+    self.ground_height = torch.where(
+      init_mask, wheel_height, self.ground_height
+    )
+    self.peak_height = torch.where(init_mask, wheel_height, self.peak_height)
+    self.initialized[:] = True
+
+    self.peak_height = torch.where(
+      in_contact,
+      self.peak_height,
+      torch.maximum(self.peak_height, wheel_height),
+    )
+    clearance = torch.clamp(self.peak_height - self.ground_height, min=0.0)
+
+    relief = _terrain_relief(env, terrain_sensor_name)
+    target = torch.clamp(
+      relief + clearance_margin,
+      min=min_clearance,
+      max=max_clearance,
+    ).unsqueeze(1)
+    cleared_fraction = torch.clamp(clearance / target, min=0.0, max=1.0)
+
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    active = (
+      (relief > obstacle_threshold)
+      & (torch.norm(command[:, :2], dim=1) > command_threshold)
+    )
+    landing_reward = torch.sum(
+      cleared_fraction * first_contact.float(), dim=1
+    ) / torch.clamp(torch.sum(first_contact.float(), dim=1), min=1.0)
+
+    self.ground_height = torch.where(in_contact, wheel_height, self.ground_height)
+    self.peak_height = torch.where(in_contact, wheel_height, self.peak_height)
+
+    env.extras["log"]["Metrics/terrain_relief"] = torch.mean(relief)
+    env.extras["log"]["Metrics/wheel_clearance"] = torch.mean(clearance)
+    return landing_reward * active.float()
+
+
+def turning_diagonal_gait(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  period: float,
+  target_height: float,
+  linear_threshold: float,
+  angular_threshold: float,
+  group_a: tuple[int, int],
+  group_b: tuple[int, int],
+  asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+  """Reward alternating diagonal support and wheel lift for near-pure yaw."""
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  assert contact_sensor.data.found is not None
+
+  contact = contact_sensor.data.found > 0
+  wheel_height = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+  phase = (env.episode_length_buf * env.step_dt) % period / period
+  support_a = phase < 0.5
+
+  group_a_ids = list(group_a)
+  group_b_ids = list(group_b)
+  a_contact = torch.mean(contact[:, group_a_ids].float(), dim=1)
+  b_contact = torch.mean(contact[:, group_b_ids].float(), dim=1)
+  a_height = torch.mean(wheel_height[:, group_a_ids], dim=1)
+  b_height = torch.mean(wheel_height[:, group_b_ids], dim=1)
+
+  contact_score_a = 0.5 * (a_contact + (1.0 - b_contact))
+  contact_score_b = 0.5 * (b_contact + (1.0 - a_contact))
+  lift_score_a = torch.clamp(
+    (b_height - a_height) / target_height, min=0.0, max=1.0
+  )
+  lift_score_b = torch.clamp(
+    (a_height - b_height) / target_height, min=0.0, max=1.0
+  )
+  score_a = 0.5 * (contact_score_a + lift_score_a)
+  score_b = 0.5 * (contact_score_b + lift_score_b)
+  reward = torch.where(support_a, score_a, score_b)
+
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  active = (
+    (torch.norm(command[:, :2], dim=1) < linear_threshold)
+    & (torch.abs(command[:, 2]) > angular_threshold)
+  )
+  return reward * active.float()

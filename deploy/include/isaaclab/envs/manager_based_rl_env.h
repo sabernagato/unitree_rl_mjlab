@@ -9,6 +9,7 @@
 #include "isaaclab/manager/action_manager.h"
 #include "isaaclab/assets/articulation/articulation.h"
 #include "isaaclab/algorithms/algorithms.h"
+#include <algorithm>
 #include <iostream>
 #include "isaaclab/utils/utils.h"
 
@@ -27,7 +28,7 @@ public:
     {
         // Parse configuration
         this->step_dt = cfg["step_dt"].as<float>();
-        robot->data.joint_ids_map = cfg["joint_ids_map"].as<std::vector<float>>();
+        robot->data.joint_ids_map = cfg["joint_ids_map"].as<std::vector<int>>();
         robot->data.joint_pos.resize(robot->data.joint_ids_map.size());
         robot->data.joint_vel.resize(robot->data.joint_ids_map.size());
 
@@ -45,6 +46,11 @@ public:
         // load managers
         action_manager = std::make_unique<ActionManager>(cfg["actions"], this);
         observation_manager = std::make_unique<ObservationManager>(cfg["observations"], this);
+
+        if (cfg["clip_actions"].IsDefined() && !cfg["clip_actions"].IsNull())
+        {
+            clip_actions = cfg["clip_actions"].as<float>();
+        }
     }
 
     void reset()
@@ -62,6 +68,13 @@ public:
         robot->update();
         auto obs = observation_manager->compute();
         auto action = alg->act(obs);
+        if (clip_actions > 0.0f)
+        {
+            for (auto & value : action)
+            {
+                value = std::clamp(value, -clip_actions, clip_actions);
+            }
+        }
         action_manager->process_action(action);
     }
 
@@ -75,6 +88,7 @@ public:
     std::unique_ptr<Algorithms> alg;
     long episode_length = 0;
     float global_phase = 0.0f;
+    float clip_actions = 0.0f;
 };
 
 };

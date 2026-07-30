@@ -31,6 +31,7 @@ def terrain_levels_vel(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
   command_name: str,
+  progress_distance: float | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_SCENE_CFG,
 ) -> torch.Tensor:
   asset: Entity = env.scene[asset_cfg.name]
@@ -48,8 +49,13 @@ def terrain_levels_vel(
     asset.data.root_link_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1
   )
 
-  # Robots that walked far enough progress to harder terrains.
-  move_up = distance > terrain_generator.size[0] / 2
+  # Robots that walked far enough progress to harder terrains. A task may use
+  # a smaller distance when it terminates before a generated terrain-tile seam.
+  if progress_distance is None:
+    progress_distance = terrain_generator.size[0] / 2
+  if progress_distance <= 0.0:
+    raise ValueError("progress_distance must be positive")
+  move_up = distance >= progress_distance
 
   # Robots that walked less than half of their required distance go to simpler
   # terrains.
@@ -69,13 +75,15 @@ def commands_vel(
   env_ids: torch.Tensor,
   command_name: str,
   velocity_stages: list[VelocityStage],
+  step_offset: int = 0,
 ) -> dict[str, torch.Tensor]:
   del env_ids  # Unused.
   command_term = env.command_manager.get_term(command_name)
   assert command_term is not None
   cfg = cast(UniformVelocityCommandCfg, command_term.cfg)
+  curriculum_step = max(0, env.common_step_counter - step_offset)
   for stage in velocity_stages:
-    if env.common_step_counter > stage["step"]:
+    if curriculum_step > stage["step"]:
       if "lin_vel_x" in stage and stage["lin_vel_x"] is not None:
         cfg.ranges.lin_vel_x = stage["lin_vel_x"]
       if "lin_vel_y" in stage and stage["lin_vel_y"] is not None:

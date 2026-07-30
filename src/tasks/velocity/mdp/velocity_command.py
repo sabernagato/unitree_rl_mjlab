@@ -280,3 +280,102 @@ class UniformVelocityCommandCfg(CommandTermCfg):
         "The velocity command has heading commands active (heading_command=True) but "
         "the `ranges.heading` parameter is set to None."
       )
+
+
+class ModeVelocityCommand(UniformVelocityCommand):
+  """Velocity command sampler with explicit wheel-legged operating modes.
+
+  Uniformly sampling all command axes almost never produces exact standstill,
+  straight-only, or yaw-only commands. Those modes need different wheel-legged
+  behaviors, so reserve a configurable fraction of environments for each one.
+  """
+
+  cfg: ModeVelocityCommandCfg
+
+  @staticmethod
+  def _sample_with_minimum_magnitude(
+    count: int,
+    value_range: tuple[float, float],
+    minimum_magnitude: float,
+    device: str,
+  ) -> torch.Tensor:
+    values = torch.empty(count, device=device).uniform_(*value_range)
+    if minimum_magnitude <= 0.0:
+      return values
+    signs = torch.where(values < 0.0, -torch.ones_like(values), torch.ones_like(values))
+    return torch.where(
+      torch.abs(values) < minimum_magnitude,
+      signs * minimum_magnitude,
+      values,
+    )
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    super()._resample_command(env_ids)
+    num_envs = len(env_ids)
+    if num_envs == 0:
+      return
+
+    slots = torch.rand(num_envs, device=self.device)
+    zero_end = self.cfg.rel_zero_envs
+    straight_end = zero_end + self.cfg.rel_straight_envs
+    yaw_end = straight_end + self.cfg.rel_yaw_envs
+
+    zero_mask = slots < zero_end
+    straight_mask = (slots >= zero_end) & (slots < straight_end)
+    yaw_mask = (slots >= straight_end) & (slots < yaw_end)
+
+    zero_ids = env_ids[zero_mask]
+    straight_ids = env_ids[straight_mask]
+    yaw_ids = env_ids[yaw_mask]
+
+    if len(zero_ids) > 0:
+      self.vel_command_b[zero_ids] = 0.0
+      self.is_standing_env[zero_ids] = True
+      self.is_heading_env[zero_ids] = False
+
+    if len(straight_ids) > 0:
+      self.vel_command_b[straight_ids, 0] = self._sample_with_minimum_magnitude(
+        len(straight_ids),
+        self.cfg.ranges.lin_vel_x,
+        self.cfg.minimum_command,
+        self.device,
+      )
+      self.vel_command_b[straight_ids, 1:] = 0.0
+      self.is_standing_env[straight_ids] = False
+      self.is_heading_env[straight_ids] = False
+
+    if len(yaw_ids) > 0:
+      self.vel_command_b[yaw_ids, :2] = 0.0
+      self.vel_command_b[yaw_ids, 2] = self._sample_with_minimum_magnitude(
+        len(yaw_ids),
+        self.cfg.ranges.ang_vel_z,
+        self.cfg.minimum_command,
+        self.device,
+      )
+      self.is_standing_env[yaw_ids] = False
+      self.is_heading_env[yaw_ids] = False
+
+
+@dataclass(kw_only=True)
+class ModeVelocityCommandCfg(UniformVelocityCommandCfg):
+  """Configuration for mode-balanced wheel-legged velocity commands."""
+
+  rel_zero_envs: float = 0.15
+  rel_straight_envs: float = 0.25
+  rel_yaw_envs: float = 0.25
+  minimum_command: float = 0.2
+
+  def build(self, env: ManagerBasedRlEnv) -> ModeVelocityCommand:
+    return ModeVelocityCommand(self, env)
+
+  def __post_init__(self):
+    super().__post_init__()
+    proportions = (
+      self.rel_zero_envs,
+      self.rel_straight_envs,
+      self.rel_yaw_envs,
+    )
+    if any(value < 0.0 for value in proportions):
+      raise ValueError("Mode command proportions must be non-negative.")
+    if sum(proportions) > 1.0:
+      raise ValueError("Mode command proportions must sum to at most 1.0.")

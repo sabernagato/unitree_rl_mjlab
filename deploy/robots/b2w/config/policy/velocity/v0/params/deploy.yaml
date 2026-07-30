@@ -1,0 +1,87 @@
+# Policy/model order:
+#   FL hip/thigh/calf/wheel, FR ..., RL ..., RR ...
+# Unitree SDK order:
+#   FR leg, FL leg, RR leg, RL leg, FR/FL/RR/RL wheels.
+joint_ids_map: [3, 4, 5, 13, 0, 1, 2, 12, 9, 10, 11, 15, 6, 7, 8, 14]
+step_dt: 0.02
+clip_actions: 4.0
+
+# Gains are listed in Unitree SDK motor order.
+stiffness: [100, 100, 160, 100, 100, 160, 100, 100, 160, 100, 100, 160, 0, 0, 0, 0]
+damping:   [  5,   5,   8,   5,   5,   8,   5,   5,   8,   5,   5,   8, 1, 1, 1, 1]
+
+# Default pose is listed in policy/model joint order.
+default_joint_pos: [
+  -0.1, 0.9, -1.8, 0.0,
+   0.1, 0.9, -1.8, 0.0,
+  -0.1, 0.9, -1.8, 0.0,
+   0.1, 0.9, -1.8, 0.0,
+]
+
+commands:
+  base_velocity:
+    ranges:
+      # Conservative subset of the final training curriculum.
+      lin_vel_x: [-1.0, 1.0]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_z: [-1.0, 1.0]
+      heading: null
+
+# YAML insertion order is the exported policy action order: 12 leg targets,
+# followed by four wheel velocity targets.
+actions:
+  JointPositionAction:
+    joint_ids: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
+    scale: [0.125, 0.25, 0.25, 0.125, 0.25, 0.25, 0.125, 0.25, 0.25, 0.125, 0.25, 0.25]
+    offset: [-0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8]
+    clip:
+      [[-0.87, 0.87], [-0.94, 4.69], [-2.82, -0.43],
+       [-0.87, 0.87], [-0.94, 4.69], [-2.82, -0.43],
+       [-0.87, 0.87], [-0.94, 4.69], [-2.82, -0.43],
+       [-0.87, 0.87], [-0.94, 4.69], [-2.82, -0.43]]
+  JointVelocityAction:
+    joint_ids: [3, 7, 11, 15]
+    scale: [5.0, 5.0, 5.0, 5.0]
+    offset: [0.0, 0.0, 0.0, 0.0]
+    clip: [[-20.0, 20.0], [-20.0, 20.0], [-20.0, 20.0], [-20.0, 20.0]]
+
+# Keep per-term history (term-major). This matches MjLab's flattened group
+# history: all five base_ang_vel frames, then all five gravity frames, etc.
+observations:
+  base_ang_vel:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0]
+    history_length: 5
+  projected_gravity:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0]
+    history_length: 5
+  velocity_commands:
+    params: {command_name: base_velocity}
+    clip: null
+    scale: [1.0, 1.0, 1.0]
+    history_length: 5
+  gait_phase:
+    params: {period: 0.6}
+    clip: null
+    scale: [1.0, 1.0]
+    history_length: 5
+  joint_pos_rel:
+    params:
+      asset_cfg:
+        joint_ids: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 5
+  joint_vel_rel:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 5
+  last_action:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 5

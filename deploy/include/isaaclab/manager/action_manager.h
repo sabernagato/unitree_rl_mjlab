@@ -48,6 +48,7 @@ public:
     {
         _prepare_terms();
         _action.resize(total_action_dim(), 0.0f);
+        reset();
     }
 
     void reset()
@@ -77,6 +78,12 @@ public:
 
     void process_action(std::vector<float> action)
     {
+        if (action.size() != static_cast<std::size_t>(total_action_dim()))
+        {
+            throw std::runtime_error(
+                "Policy action dimension does not match configured action dimension."
+            );
+        }
         _action = action;
         int idx = 0;
         for(auto & term : _terms)

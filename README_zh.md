@@ -55,6 +55,8 @@ python scripts/train.py Unitree-G1-Flat \
 
 - 第一个参数(如 Mjlab-Velocity-Flat-Unitree-G1)为必选参数，确定要启用的训练环境。可选：
   - Unitree-B2W-Flat
+  - Unitree-B2W-Deployable
+  - Unitree-B2W-Privileged
   - Unitree-B2W-Rough
   - Unitree-Go2-Flat
   - Unitree-G1-Flat
@@ -71,6 +73,37 @@ python scripts/train.py Unitree-B2W-Flat --env.scene.num-envs=4096
 
 B2W 策略使用位置目标控制 12 个腿部关节、使用速度目标控制 4 个轮关节。
 由于四个轮子不能转向，训练命令中已禁用横向速度。
+
+轮足能力验证建议使用独立的 Privileged 训练入口：
+
+```bash
+python scripts/train_b2w_privileged.py --num-envs 4096
+```
+
+该任务给 Actor 提供精确机身速度、轮端接触/接触力，以及宇树默认的
+1.6 m × 1.0 m、0.1 m 分辨率地形高度图（17 × 11，共 187 点）；训练采用
+2～20 cm 楼梯课程、站立/直行/原地转向定比例指令采样、
+轮端滚动约束、障碍抬轮奖励和原地转向对角交替步态。默认训练 20,000 次 PPO
+迭代。训练期间还会随机施加短时三维外力，其中侧向扰动占 60%、竖直扰动占
+15%，其余方向在三维空间均匀采样；强度随训练阶段从 60～120 N 增长到
+140～240 N，用于学习突发干扰恢复。验证 20 kg 负载时增加
+`--payload-kg 20`；续训时使用
+`--resume --load-run ... --load-checkpoint ...`。
+
+以最终 B2-W 真机部署为目标时，使用非对称训练入口：
+
+```bash
+python scripts/train_b2w_deployable.py --num-envs 1280
+```
+
+Deployable Actor 仅使用 B2-W `LowState` 可构造的 IMU、腿关节位置、全部
+关节速度、速度指令、相位和历史动作，并堆叠 5 帧本体感知历史。Critic 保留
+精确机身线速度、187 点高度图和轮端接触/接触力作为训练特权信息；这些信息
+不会进入导出的 Actor。面向 Sim-to-Real 的训练还会随机化整机质量/惯量、
+腿部 PD 增益和 0～20 ms 动作延迟。
+
+Actor、Critic 和 Action 的逐维索引、单位、历史排列及“净增加 33 维”的计算
+见 [B2-W 策略维度契约](doc/b2w_policy_dimensions.md)。
 
 > [!NOTE]
 > 更多有关详细说明，请参阅 mjlab 文档
@@ -184,6 +217,36 @@ cmake .. && make
 ```
 
 #### 4.5 部署
+
+### B2-W 专用链路
+
+`Unitree-B2W-Deployable` 每次保存 checkpoint 时会在同一 run 目录导出
+`policy.onnx`。将通过验证的模型复制到
+`deploy/robots/b2w/config/policy/velocity/v0/exported/policy.onnx`，然后编译：
+
+```bash
+cd deploy/robots/b2w
+mkdir -p build && cd build
+cmake .. && make -j
+```
+
+在官方 `unitree_mujoco` 中选择 `robot: "b2w"`、DDS domain `1` 和回环网卡
+`lo`，启动仿真后运行：
+
+```bash
+./b2w_ctrl --domain=1 --network=lo
+```
+
+真机使用 DDS domain `0`：
+
+```bash
+./b2w_ctrl --domain=0 --network=enp5s0
+```
+
+B2-W 适配器将前 12 维策略输出写为腿关节位置目标，将后 4 维写为轮关节速度
+目标，并完成 MuJoCo 顺序到 Unitree SDK 电机编号的映射。首次真机低层测试
+必须吊装、释放原生运控服务，并安排人员随时切回 Passive。详细契约见
+`deploy/robots/b2w/README.md`。
 
 ## 4.5.1 仿真部署
 

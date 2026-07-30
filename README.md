@@ -57,6 +57,8 @@ python scripts/train.py Unitree-G1-Flat \
 - The first argument (e.g., Mjlab-Velocity-Flat-Unitree-G1) specifies the training task.
 Available velocity tracking tasks:
   - Unitree-B2W-Flat
+  - Unitree-B2W-Deployable
+  - Unitree-B2W-Privileged
   - Unitree-B2W-Rough
   - Unitree-B2W-Stairs
   - Unitree-Go2-Flat
@@ -75,6 +77,44 @@ python scripts/train.py Unitree-B2W-Flat --env.scene.num-envs=4096
 The B2W policy controls 12 leg joints with position targets and four wheel
 joints with velocity targets. Lateral velocity commands are disabled because
 the wheels are not steerable.
+
+For wheel-legged capability validation, use the dedicated privileged launcher:
+
+```bash
+python scripts/train_b2w_privileged.py --num-envs 4096
+```
+
+This task gives the actor exact base velocity, wheel contacts/forces, and a
+Unitree-default 1.6 m by 1.0 m terrain scan at 0.1 m resolution (17 by 11,
+187 samples). It uses a 2-20 cm stair curriculum, explicit
+stand/straight/yaw command sampling, wheel rolling constraints, obstacle
+clearance rewards, and an alternating diagonal gait for near-pure yaw. The
+default run is 20,000 PPO iterations. During training, short three-dimensional
+body-frame force impulses increase from 60-120 N to 140-240 N. Lateral
+directions account for 60% of pushes, vertical directions for 15%, and the
+remainder are sampled uniformly in 3D. Use `--payload-kg 20` to validate
+payload capability, and use `--resume --load-run ... --load-checkpoint ...` to
+continue a run.
+
+For an actor intended for eventual deployment on a real B2-W, use asymmetric
+training:
+
+```bash
+python scripts/train_b2w_deployable.py --num-envs 1280
+```
+
+The deployable actor uses only IMU, leg positions, all joint velocities,
+commands, phase, and previous actions that can be reconstructed from B2-W
+`LowState`, with five frames of proprioceptive history. Exact base velocity,
+the 187-point terrain scan, and wheel contact/forces remain critic-only
+privileged observations and are not part of the exported actor. Sim-to-real
+training also randomizes mass/inertia, leg PD gains, and 0-20 ms of action
+latency.
+
+The complete index-by-index Actor, Critic, and Action contract is documented in
+[B2-W policy dimensions](doc/b2w_policy_dimensions.md), including why the
+deployable 275-dimensional Actor is only a net 33 dimensions larger than the
+242-dimensional Rough Actor.
 
 The stair-specialist task uses fixed 15 cm and 20 cm stairs plus a fixed
 40 cm single step (up and down variants), without interpolating step heights:
@@ -198,6 +238,37 @@ cmake .. && make
 ```
 
 #### 4.5 Deployment
+
+### B2-W path
+
+`Unitree-B2W-Deployable` exports `policy.onnx` beside each saved checkpoint.
+Copy a validated model to
+`deploy/robots/b2w/config/policy/velocity/v0/exported/policy.onnx`, then build:
+
+```bash
+cd deploy/robots/b2w
+mkdir -p build && cd build
+cmake .. && make -j
+```
+
+Select `robot: "b2w"`, DDS domain `1`, and interface `lo` in the official
+`unitree_mujoco` configuration. After starting the simulator, run:
+
+```bash
+./b2w_ctrl --domain=1 --network=lo
+```
+
+For a real B2-W, use DDS domain `0` and the robot-facing Ethernet interface:
+
+```bash
+./b2w_ctrl --domain=0 --network=enp5s0
+```
+
+The B2-W adapter writes the first 12 outputs as leg position targets and the
+last four as wheel velocity targets, with an explicit MuJoCo-to-Unitree motor
+mapping. The first real low-level test must be performed with the robot
+suspended, the built-in motion service released, and an operator ready to
+return to Passive. See `deploy/robots/b2w/README.md` for the full contract.
 
 ## 4.5.1 Simulation Deployment
 
